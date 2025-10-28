@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>TalkShak</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="firebase-config.js"></script>
+  <style>
+    :root { --primary: #14b8a6; --bg: #0f172a; --chat: #1e293b; --sent: #22d3ee; --received: #334155; --text: #e2e8f0; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+    .header { background: var(--primary); color: white; padding: 1rem; display: flex; align-items: center; gap: 1rem; }
+    .header img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
+    .chat-area { flex: 1; background: var(--chat); overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.8rem; }
+    .message { max-width: 75%; padding: 0.6rem 1rem; border-radius: 18px; font-size: 0.95rem; }
+    .sent { align-self: flex-end; background: var(--sent); color: #0f172a; }
+    .received { align-self: flex-start; background: var(--received); color: var(--text); }
+    .message .time { font-size: 0.7rem; opacity: 0.7; margin-top: 0.3rem; text-align: right; }
+    .input-area { background: var(--bg); padding: 0.8rem; display: flex; gap: 0.5rem; }
+    .input-area input { flex: 1; padding: 0.9rem 1.2rem; border: none; border-radius: 25px; background: var(--chat); color: var(--text); }
+    .send-btn { background: var(--primary); color: white; border: none; width: 46px; height: 46px; border-radius: 50%; cursor: pointer; }
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; }
+    .modal-box { background: white; color: #0f172a; padding: 2rem; border-radius: 16px; width: 90%; max-width: 340px; text-align: center; }
+    .modal-box input, .modal-box button { width: 100%; padding: 1rem; margin: 0.5rem 0; border-radius: 12px; }
+    .modal-box button { background: var(--primary); color: white; border: none; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <div class="modal" id="authModal">
+    <div class="modal-box">
+      <h2>TalkShak</h2>
+      <p>Enter your phone number</p>
+      <input type="tel" id="phoneInput" placeholder="+1234567890" />
+      <div id="recaptcha-container"></div>
+      <button id="sendOtp">Send OTP</button>
+      <div id="otpSection" style="display:none;">
+        <input type="text" id="otpInput" placeholder="Enter OTP" />
+        <input type="text" id="nameInput" placeholder="Your Name" />
+        <input type="file" id="photoInput" accept="image/*" />
+        <button id="verifyOtp">Verify & Join</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="header">
+    <img id="myAvatar" src="https://via.placeholder.com/40" />
+    <div id="myName">TalkShak</div>
+  </div>
+
+  <div class="chat-area" id="chat"></div>
+
+  <div class="input-area">
+    <input type="text" id="messageInput" placeholder="Type a message..." disabled />
+    <button class="send-btn" id="sendBtn" disabled>Send</button>
+  </div>
+
+  <script>
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const storage = firebase.storage();
+    const socket = io();
+
+    let confirmationResult;
+
+    window.onload = () => {
+      window.recaptchaVerifier = new firebase.auth.RecaptchaVerifier('recaptcha-container', { size: 'invisible' });
+    };
+
+    document.getElementById('sendOtp').onclick = () => {
+      const phone = document.getElementById('phoneInput').value;
+      auth.signInWithPhoneNumber(phone, window.recaptchaVerifier)
+        .then((result) => {
+          confirmationResult = result;
+          document.getElementById('otpSection').style.display = 'block';
+          document.getElementById('sendOtp').style.display = 'none';
+        }).catch(err => alert(err.message));
+    };
+
+    document.getElementById('verifyOtp').onclick = async () => {
+      const otp = document.getElementById('otpInput').value;
+      const name = document.getElementById('nameInput').value.trim() || 'User';
+      const file = document.getElementById('photoInput').files[0];
+
+      try {
+        const credential = await confirmationResult.confirm(otp);
+        const user = credential.user;
+        let photoURL = 'https://via.placeholder.com/40';
+        if (file) {
+          const ref = storage.ref(`avatars/${user.uid}`);
+          await ref.put(file);
+          photoURL = await ref.getDownloadURL();
+        }
+
+        document.getElementById('authModal').style.display = 'none';
+        document.getElementById('myName').textContent = name;
+        document.getElementById('myAvatar').src = photoURL;
+
+        socket.emit('register', { uid: user.uid, name, phone: user.phoneNumber, photoURL });
+      } catch (err) { alert(err.message); }
+    };
+
+    socket.on('registered', () => {
+      document.getElementById('messageInput').disabled = false;
+      document.getElementById('sendBtn').disabled = false;
+    });
+
+    function sendMessage() {
+      const text = document.getElementById('messageInput').value.trim();
+      if (!text) return;
+      socket.emit('chat', { text, time: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) });
+      document.getElementById('messageInput').value = '';
+    }
+    document.getElementById('sendBtn').onclick = sendMessage;
+    document.getElementById('messageInput').onkeypress = e => { if (e.key === 'Enter') sendMessage(); };
+
+    socket.on('chat', (data) => {
+      const msg = document.createElement('div');
+      msg.className = 'message received';
+      msg.innerHTML = `<div style="font-weight:600; color:#14b8a6;">${data.name}</div><div>${data.text}</div><div class="time">${data.time}</div>`;
+      document.getElementById('chat').appendChild(msg);
+      document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
+    });
+
+    socket.on('message-sent', (data) => {
+      const msg = document.createElement('div');
+      msg.className = 'message sent';
+      msg.innerHTML = `<div>${data.text}</div><div class="time">${data.time}</div>`;
+      document.getElementById('chat').appendChild(msg);
+      document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
+    });
+  </script>
+</body>
+</html>
